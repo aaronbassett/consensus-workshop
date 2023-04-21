@@ -40,8 +40,29 @@ pub mod pallet {
 		shipped_by: T::AccountId,
 		received_by: T::AccountId,
 		received_at: Coords,
+		received_on: T::BlockNumber,
 		destination: u64,
 		delivered: bool,
+	}
+
+	impl<T: Config> Shipment<T> {
+		pub fn new(
+			shipment_id: u64,
+			shipped_by: T::AccountId,
+			received_by: T::AccountId,
+			received_at: Coords,
+			destination: u64,
+		) -> Self {
+			Shipment {
+				id: shipment_id,
+				shipped_by,
+				received_by,
+				received_at,
+				received_on: frame_system::Pallet::<T>::block_number(),
+				destination,
+				delivered: false,
+			}
+		}
 	}
 
 	// The pallet's runtime storage items.
@@ -77,43 +98,91 @@ pub mod pallet {
 	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
 		#[pallet::call_index(0)]
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
-		pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
+		pub fn begin_transit(
+			origin: OriginFor<T>,
+			shipment_id: u64,
+			shipped_by: T::AccountId,
+			received_at: Coords,
+			destination: u64,
+		) -> DispatchResult {
 			// Check that the extrinsic was signed and get the signer.
 			// This function will return an error if the extrinsic is not signed.
 			// https://docs.substrate.io/main-docs/build/origins/
-			let who = ensure_signed(origin)?;
+			let received_by = ensure_signed(origin)?;
 
-			// Update storage.
-			<Something<T>>::put(something);
+			ensure!(!Shipments::<T>::contains_key(&shipment_id), Error::<T>::DuplicateShipment);
 
-			// Emit an event.
-			Self::deposit_event(Event::SomethingStored { something, who });
-			// Return a successful DispatchResultWithPostInfo
+			Shipments::<T>::insert(
+				&shipment_id,
+				Shipment::new(
+					shipment_id,
+					shipped_by.clone(),
+					received_by.clone(),
+					received_at.clone(),
+					destination,
+				),
+			);
+
+			Self::deposit_event(Event::ShipmentReceived { shipment_id, received_by, received_at });
+
 			Ok(())
 		}
 
-		/// An example dispatchable that may throw a custom error.
-		#[pallet::call_index(1)]
+		#[pallet::call_index(10)]
 		#[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
-		pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
+		pub fn shipment_received(
+			origin: OriginFor<T>,
+			shipment_id: u64,
+			received_at: Coords,
+		) -> DispatchResult {
+			let received_by = ensure_signed(origin)?;
 
-			// Read a value from storage.
-			match <Something<T>>::get() {
-				// Return an error if the value has not been set.
-				None => return Err(Error::<T>::NoneValue.into()),
-				Some(old) => {
-					// Increment the value read from storage; will error in the event of overflow.
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					// Update the value in storage with the incremented result.
-					<Something<T>>::put(new);
-					Ok(())
-				},
-			}
+			Shipments::<T>::try_mutate(&shipment_id, |shipment| -> DispatchResult {
+				match shipment {
+					Some(s) if !s.delivered => {
+						s.received_by = received_by.clone();
+						s.received_at = received_at.clone();
+						s.received_on = frame_system::Pallet::<T>::block_number();
+					},
+					Some(s) if s.delivered => return Err(Error::<T>::ShipmentNotInTransit.into()),
+					_ => return Err(Error::<T>::ShipmentDoesNotExist.into()),
+				}
+				Ok(())
+			})?;
+
+			Self::deposit_event(Event::ShipmentReceived { shipment_id, received_by, received_at });
+
+			Ok(())
+		}
+
+		#[pallet::call_index(20)]
+		#[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
+		pub fn shipment_delivered(
+			origin: OriginFor<T>,
+			shipment_id: u64,
+			received_at: Coords,
+		) -> DispatchResult {
+			let received_by = ensure_signed(origin)?;
+
+			Shipments::<T>::try_mutate(&shipment_id, |shipment| -> DispatchResult {
+				match shipment {
+					Some(s) if !s.delivered => {
+						s.received_by = received_by;
+						s.received_at = received_at;
+						s.received_on = frame_system::Pallet::<T>::block_number();
+						s.delivered = true;
+					},
+					Some(s) if s.delivered => return Err(Error::<T>::ShipmentNotInTransit.into()),
+					_ => return Err(Error::<T>::ShipmentDoesNotExist.into()),
+				}
+				Ok(())
+			})?;
+
+			Self::deposit_event(Event::ShipmentDelivered { shipment_id });
+
+			Ok(())
 		}
 	}
 }

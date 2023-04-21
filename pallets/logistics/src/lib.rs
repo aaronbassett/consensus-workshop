@@ -70,6 +70,9 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type Shipments<T> = CountedStorageMap<_, Blake2_128Concat, u64, Shipment<T>>;
 
+	#[pallet::storage]
+	pub type DeliveredLog<T> = StorageValue<_, BoundedVec<u64, ConstU32<100>>, ValueQuery>;
+
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/main-docs/build/events-errors/
 	#[pallet::event]
@@ -77,7 +80,6 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		/// Shipment received [shipment_id, shipped_by, received_by]
 		ShipmentReceived { shipment_id: u64, received_by: T::AccountId, received_at: Coords },
-
 		/// Shipment has been delivered [shipment_id]
 		ShipmentDelivered { shipment_id: u64 },
 	}
@@ -91,6 +93,19 @@ pub mod pallet {
 		DuplicateShipment,
 		/// Cannot modify shipment that has been delivered
 		ShipmentNotInTransit,
+		/// Delivered log is full
+		DeliveredLogOverflow,
+	}
+
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(_n: T::BlockNumber) -> Weight {
+			for shipment_id in DeliveredLog::<T>::get().iter() {
+				Shipments::<T>::remove(shipment_id);
+			}
+			DeliveredLog::<T>::kill();
+			Weight::zero()
+		}
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -177,6 +192,10 @@ pub mod pallet {
 					Some(s) if s.delivered => return Err(Error::<T>::ShipmentNotInTransit.into()),
 					_ => return Err(Error::<T>::ShipmentDoesNotExist.into()),
 				}
+
+				DeliveredLog::<T>::try_append(shipment_id)
+					.map_err(|_| Error::<T>::DeliveredLogOverflow)?;
+
 				Ok(())
 			})?;
 

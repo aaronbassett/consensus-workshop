@@ -54,18 +54,22 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// Event documentation should end with an array that provides descriptive names for event
-		/// parameters. [something, who]
-		SomethingStored { something: u32, who: T::AccountId },
+		/// Shipment received [shipment_id, shipped_by, received_by]
+		ShipmentReceived { shipment_id: u64, received_by: T::AccountId, received_at: Coords },
+
+		/// Shipment has been delivered [shipment_id]
+		ShipmentDelivered { shipment_id: u64 },
 	}
 
 	// Errors inform users that something went wrong.
 	#[pallet::error]
 	pub enum Error<T> {
-		/// Error names should be descriptive.
-		NoneValue,
-		/// Errors should have helpful documentation associated with them.
-		StorageOverflow,
+		/// No shipment found for supplied id
+		ShipmentDoesNotExist,
+		/// Cannot create shipment with duplicate id
+		DuplicateShipment,
+		/// Cannot modify shipment that has been delivered
+		ShipmentNotInTransit,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.

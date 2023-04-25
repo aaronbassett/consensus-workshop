@@ -156,12 +156,13 @@ pub mod pallet {
 
 			Shipments::<T>::try_mutate(&shipment_id, |shipment| -> DispatchResult {
 				match shipment {
-					Some(s) if !s.delivered => {
-						s.received_by = received_by.clone();
-						s.received_at = received_at.clone();
-						s.received_on = frame_system::Pallet::<T>::block_number();
+					Some(package) if !package.delivered => {
+						package.received_by = received_by.clone();
+						package.received_at = received_at.clone();
+						package.received_on = frame_system::Pallet::<T>::block_number();
 					},
-					Some(s) if s.delivered => return Err(Error::<T>::ShipmentNotInTransit.into()),
+					Some(package) if package.delivered =>
+						return Err(Error::<T>::ShipmentNotInTransit.into()),
 					_ => return Err(Error::<T>::ShipmentDoesNotExist.into()),
 				}
 				Ok(())
@@ -183,13 +184,14 @@ pub mod pallet {
 
 			Shipments::<T>::try_mutate(&shipment_id, |shipment| -> DispatchResult {
 				match shipment {
-					Some(s) if !s.delivered => {
-						s.received_by = received_by;
-						s.received_at = received_at;
-						s.received_on = frame_system::Pallet::<T>::block_number();
-						s.delivered = true;
+					Some(package) if !package.delivered => {
+						package.received_by = received_by;
+						package.received_at = received_at;
+						package.received_on = frame_system::Pallet::<T>::block_number();
+						package.delivered = true;
 					},
-					Some(s) if s.delivered => return Err(Error::<T>::ShipmentNotInTransit.into()),
+					Some(package) if package.delivered =>
+						return Err(Error::<T>::ShipmentNotInTransit.into()),
 					_ => return Err(Error::<T>::ShipmentDoesNotExist.into()),
 				}
 

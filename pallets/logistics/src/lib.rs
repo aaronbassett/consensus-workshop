@@ -40,8 +40,29 @@ pub mod pallet {
 		shipped_by: T::AccountId,
 		received_by: T::AccountId,
 		received_at: Coords,
+		received_on: T::BlockNumber,
 		destination: u64,
 		delivered: bool,
+	}
+
+	impl<T: Config> Shipment<T> {
+		pub fn new(
+			shipment_id: u64,
+			shipped_by: T::AccountId,
+			received_by: T::AccountId,
+			received_at: Coords,
+			destination: u64,
+		) -> Self {
+			Shipment {
+				id: shipment_id,
+				shipped_by,
+				received_by,
+				received_at,
+				received_on: frame_system::Pallet::<T>::block_number(),
+				destination,
+				delivered: false,
+			}
+		}
 	}
 
 	// The pallet's runtime storage items.
@@ -49,23 +70,42 @@ pub mod pallet {
 	#[pallet::storage]
 	pub type Shipments<T> = CountedStorageMap<_, Blake2_128Concat, u64, Shipment<T>>;
 
+	#[pallet::storage]
+	pub type DeliveredLog<T> = StorageValue<_, BoundedVec<u64, ConstU32<100>>, ValueQuery>;
+
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/main-docs/build/events-errors/
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// Event documentation should end with an array that provides descriptive names for event
-		/// parameters. [something, who]
-		SomethingStored { something: u32, who: T::AccountId },
+		/// Shipment received [shipment_id, shipped_by, received_by]
+		ShipmentReceived { shipment_id: u64, received_by: T::AccountId, received_at: Coords },
+		/// Shipment has been delivered [shipment_id]
+		ShipmentDelivered { shipment_id: u64 },
 	}
 
 	// Errors inform users that something went wrong.
 	#[pallet::error]
 	pub enum Error<T> {
-		/// Error names should be descriptive.
-		NoneValue,
-		/// Errors should have helpful documentation associated with them.
-		StorageOverflow,
+		/// No shipment found for supplied id
+		ShipmentDoesNotExist,
+		/// Cannot create shipment with duplicate id
+		DuplicateShipment,
+		/// Cannot modify shipment that has been delivered
+		ShipmentNotInTransit,
+		/// Delivered log is full
+		DeliveredLogOverflow,
+	}
+
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(_n: T::BlockNumber) -> Weight {
+			for shipment_id in DeliveredLog::<T>::get().iter() {
+				Shipments::<T>::remove(shipment_id);
+			}
+			DeliveredLog::<T>::kill();
+			Weight::zero()
+		}
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -73,43 +113,97 @@ pub mod pallet {
 	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
 		#[pallet::call_index(0)]
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
-		pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
+		pub fn begin_transit(
+			origin: OriginFor<T>,
+			shipment_id: u64,
+			shipped_by: T::AccountId,
+			received_at: Coords,
+			destination: u64,
+		) -> DispatchResult {
 			// Check that the extrinsic was signed and get the signer.
 			// This function will return an error if the extrinsic is not signed.
 			// https://docs.substrate.io/main-docs/build/origins/
-			let who = ensure_signed(origin)?;
+			let received_by = ensure_signed(origin)?;
 
-			// Update storage.
-			<Something<T>>::put(something);
+			ensure!(!Shipments::<T>::contains_key(&shipment_id), Error::<T>::DuplicateShipment);
 
-			// Emit an event.
-			Self::deposit_event(Event::SomethingStored { something, who });
-			// Return a successful DispatchResultWithPostInfo
+			Shipments::<T>::insert(
+				&shipment_id,
+				Shipment::new(
+					shipment_id,
+					shipped_by.clone(),
+					received_by.clone(),
+					received_at.clone(),
+					destination,
+				),
+			);
+
+			Self::deposit_event(Event::ShipmentReceived { shipment_id, received_by, received_at });
+
 			Ok(())
 		}
 
-		/// An example dispatchable that may throw a custom error.
-		#[pallet::call_index(1)]
+		#[pallet::call_index(10)]
 		#[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
-		pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
+		pub fn shipment_received(
+			origin: OriginFor<T>,
+			shipment_id: u64,
+			received_at: Coords,
+		) -> DispatchResult {
+			let received_by = ensure_signed(origin)?;
 
-			// Read a value from storage.
-			match <Something<T>>::get() {
-				// Return an error if the value has not been set.
-				None => return Err(Error::<T>::NoneValue.into()),
-				Some(old) => {
-					// Increment the value read from storage; will error in the event of overflow.
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					// Update the value in storage with the incremented result.
-					<Something<T>>::put(new);
-					Ok(())
-				},
-			}
+			Shipments::<T>::try_mutate(&shipment_id, |shipment| -> DispatchResult {
+				match shipment {
+					Some(package) if !package.delivered => {
+						package.received_by = received_by.clone();
+						package.received_at = received_at.clone();
+						package.received_on = frame_system::Pallet::<T>::block_number();
+					},
+					Some(package) if package.delivered =>
+						return Err(Error::<T>::ShipmentNotInTransit.into()),
+					_ => return Err(Error::<T>::ShipmentDoesNotExist.into()),
+				}
+				Ok(())
+			})?;
+
+			Self::deposit_event(Event::ShipmentReceived { shipment_id, received_by, received_at });
+
+			Ok(())
+		}
+
+		#[pallet::call_index(20)]
+		#[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
+		pub fn shipment_delivered(
+			origin: OriginFor<T>,
+			shipment_id: u64,
+			received_at: Coords,
+		) -> DispatchResult {
+			let received_by = ensure_signed(origin)?;
+
+			Shipments::<T>::try_mutate(&shipment_id, |shipment| -> DispatchResult {
+				match shipment {
+					Some(package) if !package.delivered => {
+						package.received_by = received_by;
+						package.received_at = received_at;
+						package.received_on = frame_system::Pallet::<T>::block_number();
+						package.delivered = true;
+					},
+					Some(package) if package.delivered =>
+						return Err(Error::<T>::ShipmentNotInTransit.into()),
+					_ => return Err(Error::<T>::ShipmentDoesNotExist.into()),
+				}
+
+				DeliveredLog::<T>::try_append(shipment_id)
+					.map_err(|_| Error::<T>::DeliveredLogOverflow)?;
+
+				Ok(())
+			})?;
+
+			Self::deposit_event(Event::ShipmentDelivered { shipment_id });
+
+			Ok(())
 		}
 	}
 }
